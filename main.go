@@ -1,58 +1,18 @@
 package main
 
 import (
-	"math"
+	"fmt"
 	"net/http"
 	"strconv"
-
 	"time"
 
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 )
 
-// Helper function to convert percent input to decimal
-func percentToDecimal(percentStr string) (float64, error) {
-	percent, err := strconv.ParseFloat(percentStr, 64)
-	if err != nil {
-		return 0, err
-	}
-	return percent / 100, nil
-}
-
-// CalculatePV handles the request to calculate present value
-func CalculatePV(c *gin.Context) {
-	// Extract parameters from query and convert to appropriate types
-	rateStr := c.Query("rate")
-	nStr := c.Query("n")
-	pmtStr := c.Query("pmt")
-
-	rate, err := percentToDecimal(rateStr) // Assume the rate is sent as a percentage like "4.5" for 4.5%
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid rate format"})
-		return
-	}
-	n, err := strconv.Atoi(nStr)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid number of periods format"})
-		return
-	}
-	pmt, err := strconv.ParseFloat(pmtStr, 64)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid payment amount format"})
-		return
-	}
-
-	// Assuming semiannual compounding
-	r := rate / 2
-	pv := pmt * ((1 - math.Pow(1+r, -float64(n))) / r) * (1 + r)
-
-	// Respond with the calculated present value
-	c.JSON(http.StatusOK, gin.H{"PV": pv})
-}
-
 // CalculateEAR calculates the Effective Annual Rate given the APR and number of compounding periods per year
-func CalculateEAR(c *gin.Context) {
+func EARHandler(c *gin.Context) {
+	fmt.Print(c.Params)
 	aprStr := c.Query("apr")
 	nStr := c.Query("n")
 
@@ -68,15 +28,13 @@ func CalculateEAR(c *gin.Context) {
 		return
 	}
 
-	decimalApr := apr / 100
-	monthlyRate := decimalApr / float64(n)
-	ear := math.Pow(1+monthlyRate, float64(n)) - 1
-	ear = math.Round(ear*1000000) / 10000
+	ear := CalculateEAR(apr, n)
 	c.JSON(http.StatusOK, gin.H{"EAR": ear})
 }
 
 // CalculateAPR calculates the Annual Percentage Rate given the EAR and number of compounding periods per year
-func CalculateAPR(c *gin.Context) {
+func APRHandler(c *gin.Context) {
+	fmt.Print(c.Params)
 	earStr := c.Query("ear")
 	nStr := c.Query("n")
 
@@ -92,10 +50,78 @@ func CalculateAPR(c *gin.Context) {
 		return
 	}
 
-	decimalEar := ear / 100
-	apr := float64(n) * (math.Pow(1+decimalEar, 1/float64(n)) - 1)
-	apr = math.Round(apr*1000000) / 10000
+	apr := CalculateAPR(ear, n)
 	c.JSON(http.StatusOK, gin.H{"APR": apr})
+}
+
+// CalculateTimeValue handles the request to calculate time value
+func TimeValueHandler(c *gin.Context) {
+	fmt.Println(c.Request.Body)
+	var request struct {
+		Rate     float64 `json:"rate"`
+		Nper     int     `json:"nper"`
+		Pmt      float64 `json:"pmt"`
+		Pv       float64 `json:"pv"`
+		Fv       float64 `json:"fv"`
+		Type     int     `json:"type"`
+		CalcType string  `json:"calcType"`
+	}
+
+	if err := c.BindJSON(&request); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		return
+	}
+
+	var result float64
+	var err error
+
+	switch request.CalcType {
+	case "FV":
+		fmt.Print("FV")
+		result = CalculateFutureValue(request.Rate, request.Nper, request.Pmt, request.Pv, request.Type == 1)
+	case "PV":
+		fmt.Print("PV")
+		result = CalculatePresentValue(request.Rate, request.Nper, request.Pmt, request.Fv, request.Type == 1)
+	case "RATE":
+		fmt.Print("RATE")
+		result, err = CalculateRate(request.Nper, request.Pmt, request.Pv, request.Fv, request.Type == 1, request.Rate)
+	case "NPER":
+		fmt.Print("NPER")
+		result = CalculateNumberOfPeriods(request.Rate, request.Pmt, request.Pv, request.Fv, request.Type == 1)
+	case "PMT":
+		fmt.Print("PMT")
+		result = CalculatePayment(request.Rate, request.Nper, request.Pv, request.Fv, request.Type == 1)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid calculation type"})
+		return
+	}
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Return all the parameters along with the result
+	c.JSON(http.StatusOK, gin.H{
+		"rate":     request.Rate,
+		"nper":     request.Nper,
+		"pmt":      request.Pmt,
+		"pv":       request.Pv,
+		"fv":       request.Fv,
+		"type":     request.Type,
+		"calcType": request.CalcType,
+		"result":   result,
+	})
+}
+
+func TableHandler(c *gin.Context) {
+	fmt.Print(c.Request.Body)
+	var tableData [][]string
+	if err := c.ShouldBindJSON(&tableData); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	// Process the data as needed
+	c.JSON(http.StatusOK, gin.H{"status": "Data received"})
 }
 
 func main() {
@@ -103,9 +129,9 @@ func main() {
 
 	// Configure CORS middleware options
 	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000"},
+		AllowOrigins:     []string{"*"},
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Accept"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		AllowOriginFunc: func(origin string) bool {
@@ -114,19 +140,19 @@ func main() {
 		MaxAge: 12 * time.Hour,
 	}))
 
-	// Route to calculate EAR
-	r.GET("/calculateEAR", CalculateEAR)
-	r.GET("/calculateAPR", CalculateAPR)
-	r.GET("/calculatePV", CalculatePV)
-	r.POST("/submit", func(c *gin.Context) {
-		var tableData [][]string
-		if err := c.ShouldBindJSON(&tableData); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		// Process the data as needed
-		c.JSON(http.StatusOK, gin.H{"status": "Data received"})
-	})
+	r.GET("/calculateEAR", EARHandler)
+	r.GET("/calculateAPR", APRHandler)
+	r.POST("/calculateTimeValue", TimeValueHandler)
+	r.POST("/table", TableHandler)
+	// r.POST("/submit", func(c *gin.Context) {
+	// 	var tableData [][]string
+	// 	if err := c.ShouldBindJSON(&tableData); err != nil {
+	// 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	// 		return
+	// 	}
+	// 	// Process the data as needed
+	// 	c.JSON(http.StatusOK, gin.H{"status": "Data received"})
+	// })
 
 	// Start the server
 	r.Run() // listen and serve on 0.0.0.0:8080 (for windows "localhost:8080")
